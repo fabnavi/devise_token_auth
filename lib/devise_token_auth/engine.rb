@@ -16,7 +16,10 @@ module DeviseTokenAuth
                  :default_confirm_success_url,
                  :default_password_reset_url,
                  :redirect_whitelist,
-                 :check_current_password_before_update
+                 :check_current_password_before_update,
+                 :persona_verification_server,
+                 :persona_verification_path,
+                 :persona_audience_url
 
   self.change_headers_on_each_request       = true
   self.token_lifespan                       = 2.weeks
@@ -26,6 +29,9 @@ module DeviseTokenAuth
   self.default_password_reset_url           = nil
   self.redirect_whitelist                   = nil
   self.check_current_password_before_update = false
+  self.persona_verification_server          = 'verifier.login.persona.org'
+  self.persona_verification_path            = '/verify'
+  self.persona_audience_url                 = 'http://www.example.com'
 
   def self.setup(&block)
     yield self
