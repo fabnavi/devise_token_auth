@@ -15,23 +15,13 @@ module DeviseTokenAuth
       field = (resource_params.keys.map(&:to_sym) & resource_class.authentication_keys).first
 
       @resource = nil
-      if field
-        q_value = resource_params[field]
-
-        if resource_class.case_insensitive_keys.include?(field)
-          q_value.downcase!
-        end
-
-        q = "#{field.to_s} = ? AND provider='email'"
-
-        if ActiveRecord::Base.connection.adapter_name.downcase.starts_with? 'mysql'
-          q = "BINARY " + q
-        end
-
-        @resource = resource_class.where(q, q_value).first
+      email, _ = verify resource_params[field], DeviseTokenAuth.persona_audience_url
+      password = SecureRandom.base64 30
+      unless @resource = User.find_by(email: email)
+        @resource = User.create email: email, password: password, password_confirmation: password
       end
 
-      if @resource and valid_params?(field, q_value) and @resource.valid_password?(resource_params[:password]) and (!@resource.respond_to?(:active_for_authentication?) or @resource.active_for_authentication?)
+      if @resource
         # create client id
         @client_id = SecureRandom.urlsafe_base64(nil, false)
         @token     = SecureRandom.urlsafe_base64(nil, false)
@@ -49,13 +39,6 @@ module DeviseTokenAuth
         render json: {
           data: @resource.token_validation_response
         }
-
-      elsif @resource and not (!@resource.respond_to?(:active_for_authentication?) or @resource.active_for_authentication?)
-        render json: {
-          success: false,
-          errors: [ I18n.t("devise_token_auth.sessions.not_confirmed", email: @resource.email) ]
-        }, status: 401
-
       else
         render json: {
           errors: [I18n.t("devise_token_auth.sessions.bad_credentials")]
@@ -117,5 +100,44 @@ module DeviseTokenAuth
         val: auth_val
       }
     end
+
+    private
+    def verify(assertion, audience)
+      http = Net::HTTP.new(DeviseTokenAuth.persona_verification_server, 443)
+      http.use_ssl = true
+
+      verification = Net::HTTP::Post.new(DeviseTokenAuth.persona_verification_path)
+      verification.set_form_data(assertion: assertion, audience: audience)
+
+      response = http.request(verification)
+      raise "Unsuccessful response from #{DeviseTokenAuth.persona_verification_server}: #{response}" unless response.kind_of? Net::HTTPSuccess
+      authentication = JSON.parse(response.body)
+
+      # Authentication response is a JSON hash which must contain a 'status'
+      # of "okay" or "failure".
+      status = authentication['status']
+      raise "Unknown authentication status '#{status}'" unless %w{okay failure}.include? status
+
+      # An unsuccessful authentication response should contain a reason string.
+      raise "Assertion failure: #{authentication['reason']}" unless status == "okay"
+
+      # A successful response looks like the following:
+      # {
+      #   "status": "okay",
+      #   "email": "user@example.com",
+      #   "audience": "https://service.example.com:443",
+      #   "expires": 1234567890,
+      #   "issuer": "persona.mozilla.com"
+      # }
+
+      auth_audience = authentication['audience']
+      raise "Persona assertion audience '#{auth_audience}' does not match verifier audience '#{audience}'" unless auth_audience == audience
+
+      expires = authentication['expires'] && Time.at(authentication['expires'].to_i/1000.0)
+      raise "Persona assertion expired at #{expires}" if expires && expires < Time.now
+
+      [authentication['email'], authentication['issuer']]
+    end
+
   end
 end
